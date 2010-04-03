@@ -1,3 +1,4 @@
+#summary Overview of the LArc library for Lua.
 = LArc Library =
 A Lua library for reading and writing compressed files in a variety of formats.
 
