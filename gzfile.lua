@@ -33,7 +33,7 @@ local unpack = unpack or table.unpack
 
 local zlib = require"larc.zlib"
 
-module"gzfile"
+module"larc.gzfile"
 
 --[[Table of OS bytes.
   ]]

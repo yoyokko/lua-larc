@@ -33,7 +33,7 @@ local modf = math.modf
 local iopen = io.open
 local rawset,pairs = rawset,pairs
 
-module "tarfile"
+module "larc.tarfile"
 
 local POSIX_FORMAT = "ustar\00000"
 local GNU_FORMAT = "ustar  \0"
