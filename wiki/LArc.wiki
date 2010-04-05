@@ -1,5 +1,5 @@
-#summary Overview of the LArc library for Lua.
-= LArc Library =
+#summary Overview of the lArc library for Lua.
+= lArc Library =
 A Lua library for reading and writing compressed files in a variety of formats.
 
 == Release History ==
