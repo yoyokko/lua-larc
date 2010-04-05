@@ -31,7 +31,7 @@ local iopen = io.open
 
 local bzip2 = require"larc.bzip2"
 
-module"bz2file"
+module"larc.bz2file"
 
 --[[Method tables for bz2file.
   ]]

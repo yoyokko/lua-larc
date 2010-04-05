@@ -68,7 +68,7 @@ local strunpack = struct.unpack
 -- Get the platform-specific directory separator.
 local path_sep = strsub(package.config, 1, strfind(package.config,"\n")-1)
 
-module"zipfile"
+module"larc.zipfile"
 
 --[======================================================[
     Handlers for supported compression methods.
