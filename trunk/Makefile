@@ -27,6 +27,7 @@ LUALIB= $(LUA)/lib
 LUABIN= $(LUA)/bin
 ZLIB= ../../Projects/zlib-1.2.3
 BZ2= ../../Projects/bzip2-1.0.5
+LZMA= ../../Projects/xz-4.999.9beta_20091209
 
 #PLAT=unix
 #PLAT=cygwin
@@ -40,11 +41,11 @@ V= 0.0
 
 # probably no need to change anything below here
 CC= gcc
-CFLAGS= $(INCS) $(WARN) -O2 $G
+CFLAGS= $(INCS) $(WARN) -O2 $(G)
 WARN= -Wall
 INCS= -I$(LUAINC) -I$(ZLIB) -I$(BZ2)
 LIBS= -L$(ZLIB) -lz -L$(BZ2) -lbz2
-MAKESO= $(CC) -shared
+MAKESO= $(CC) $(G) -shared
 ifeq ($(PLAT),mingw32)
 LIBS+= $(LUABIN)/lua51.dll
 S= dll
@@ -64,16 +65,16 @@ MKDIR= install -m 0755 -d
 
 MODULEPATH= $(LUALIB)/larc
 LMODULES= gzfile.lua bz2file.lua tarfile.lua zipfile.lua ziploader.lua
-CMODULES= struct.$(S) zlib.$(S) bzip2.$(S) # lzma.$(S)
+CMODULES= struct.$(S) zlib.$(S) bzip2.$(S) lzma.$(S)
 
-SRCS= struct.c lzlib.c lbzip2.c
-OBJS= struct.o lzlib.o lbzip2.o
+SRCS= struct.c lzlib.c lbzip2.c llzma.c
+OBJS= struct.o lzlib.o lbzip2.o llzma.o
 
 EXTRA= lua-archive.txt lua-archive-0.0-0.rockspec
 
-all:	so
+all: so
 
-o:	$(OBJS)
+o: $(OBJS)
 
 so: $(CMODULES)
 
@@ -82,11 +83,17 @@ dll: $(CMODULES)
 struct.$(S): struct.o
 	$(MAKESO) -o $@ struct.o $(LIBS)
 
-zlib.$(S):	lzlib.o
+zlib.$(S): lzlib.o
 	$(MAKESO) -o $@ lzlib.o $(LIBS)
 
-bzip2.$(S):	lbzip2.o
+bzip2.$(S): lbzip2.o
 	$(MAKESO) -o $@ lbzip2.o $(LIBS)
+
+lzma.$(S): llzma.o
+	$(MAKESO) -o $@ llzma.o $(LZMA)/src/liblzma/.libs/liblzma.a $(LIBS)
+
+llzma.o: llzma.c
+	$(CC) $(CFLAGS) -I$(LZMA)/src/liblzma/api -c -o $@ $<
 
 clean:
 	rm -f $(OBJS) core core.*

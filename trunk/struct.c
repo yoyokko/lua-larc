@@ -398,16 +398,88 @@ static int b_unpack (lua_State *L) {
   return lua_gettop(L) - 2;
 }
 
-static int largeinttostring (lua_State *L) {
-  char s[64];
-  char *minus = "";
-  largeinteger_t li = getlargeint(L, 1);
-  if (li < 0) {
-    minus = "-";
-    li = -li;
+static size_t _tobase(ulongestint li, int base, char *buf)
+{
+  lldiv_t dm;
+  char *s;
+  int nbuf;
+  if (li == 0) {
+    *buf = '0';
+    return 1;
   }
-  sprintf(s, "%s0x%"PRIX64, minus, li);
-  lua_pushstring(L, s);
+  s = buf;
+  dm.quot = li;
+  while (dm.quot != 0) {
+    dm = lldiv(dm.quot, base);
+    if (dm.rem == 63)
+      *s++ = '/';
+    else if (dm.rem == 62)
+      *s++ = '+';
+    else if (dm.rem >= 36)
+      *s++ = 'a' - 36 + dm.rem;
+    else if (dm.rem >= 10)
+      *s++ = 'A' -10 + dm.rem;
+    else
+      *s++ = '0' + dm.rem;
+  }
+  nbuf = s - buf;
+  while (--s > buf) {
+    char c = *buf;
+    *buf++ = *s;
+    *s = c;
+  }
+  return nbuf;
+}
+
+static int largeinttostring (lua_State *L) {
+  char buf[64];
+  size_t buflen;
+  largeinteger_t li = getlargeint(L, 1);
+  int base = luaL_optint(L, 2, 0);
+  int pad = luaL_optint(L, 3, 0);
+  if (base == 0) {
+    char *s = buf;
+    buflen = 2;
+    if (li < 0) {
+      *s++ = '-';
+      li = -li;
+      buflen++;
+    }
+    s[0] = '0';
+    s[1] = 'x';
+    buflen += _tobase(li, 16, s+2);
+  }
+/*
+  else if (base == 85)
+    buflen = _tobase85(li, buf);
+  else if (base == 32)
+    buflen = _tobase32(li, buf);
+*/
+  else if (base >= 2 && base <= 64)
+    buflen = _tobase(li, base, buf);
+  else
+    return luaL_argerror(L, 2, "invalid base");
+  lua_pushlstring(L, buf, buflen);
+  if (pad > buflen) {
+    int n = lua_gettop(L);
+    pad -= buflen;
+    if (pad > 64) {
+      memset(buf, '0', 64);
+      lua_pushlstring(L, buf, 64);
+      lua_insert(L, -2);
+      pad -= 64;
+      while (pad > 64) {
+        lua_pushvalue(L, -2);
+        lua_insert(L, -2);
+      }
+    }
+    if (pad > 0) {
+      memset(buf, '0', pad);
+      lua_pushlstring(L, buf, pad);
+      lua_insert(L, -2);
+    }
+    lua_concat(L, lua_gettop(L) - n + 1);
+  }
   return 1;
 }
 
@@ -533,6 +605,7 @@ static const luaL_reg largeintMT[] = {
   {"__le", lelargeint},
   {"__tostring", largeinttostring},
   {"tonumber", largeinttonumber},
+  {"tostring", largeinttostring},
   {NULL, NULL}
 };
 
