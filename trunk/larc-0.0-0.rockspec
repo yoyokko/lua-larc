@@ -18,7 +18,8 @@ dependencies = {
 }
 external_dependencies = {
   ZLIB = { header="zlib.h" },
-  BZ2 = { header="bzlib.h" }
+  BZ2 = { header="bzlib.h" },
+  LZMA = { header="lzma.h" }
 }
 build = {
   type = "builtin",
@@ -35,9 +36,17 @@ build = {
       incdirs = { "$(BZ2_INCDIR)" },
       libdirs = { "$(BZ2_LIBDIR)" }
     },
+    ["larc.lzma"] = {
+      sources = { "llzma.c" },
+      libraries = { "lzma" },
+      incdirs = { "$(LZMA_INCDIR)" },
+      libdirs = { "$(LZMA_LIBDIR)" }
+    },
     ["larc.struct"] = "struct.c",
     ["larc.bz2file"] = "bz2file.lua",
     ["larc.gzfile"] = "gzfile.lua",
+    ["larc.lzmafile"] = "lzmafile.lua",
+    ["larc.tarfile"] = "tarfile.lua",
     ["larc.zipfile"] = "zipfile.lua",
     ["larc.ziploader"] = "ziploader.lua",
   }

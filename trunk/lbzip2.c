@@ -26,30 +26,12 @@
 #include "lauxlib.h"
 
 #include "bzlib.h"
+#include "shared.h"
 
 #define USE_SMALL_DECOMPRESS	0
 
 #define BZ2COMPRESS_MT  	"larc.bzip2.deflate"
 #define BZ2DECOMPRESS_MT	"larc.bzip2.inflate"
-
-#define GETINTOPTION(arg,opt)	{ \
-		lua_getfield(L, arg, #opt); \
-		opt = luaL_optint(L, -1, opt); \
-		lua_pop(L, 1); }
-#define SETCONSTANT(c)	{ \
-		lua_pushinteger(L, c); \
-		lua_setfield(L, -2, #c); }
-
-#if LUA_VERSION_NUM > 501
-static int lua_cpcall(lua_State *L, lua_CFunction func, void *ud)
-{
-	lua_CFunction pfunc = func;
-	lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_CPCALL);
-	lua_pushlightuserdata(L, &pfunc);
-	lua_pushlightuserdata(L, ud);
-	return lua_pcall(L, 2, 0, 0);
-}
-#endif
 
 /* Living dangerously. */
 typedef struct
@@ -166,7 +148,7 @@ static int larc_bzip2_compress(lua_State *L)
 	if (lua_gettop(L) > 1)
 	{
 		luaL_checktype(L, 2, LUA_TTABLE);
-		GETINTOPTION(2,blocksize);
+		GETINT2OPTION(2,blocksize,level);
 		GETINTOPTION(2,workfactor);
 	}
 	
@@ -224,7 +206,7 @@ static int larc_bzip2_compressor(lua_State *L)
 	if (lua_gettop(L) > 0)
 	{
 		luaL_checktype(L, 1, LUA_TTABLE);
-		GETINTOPTION(1,blocksize);
+		GETINT2OPTION(1,blocksize,level);
 		GETINTOPTION(1,workfactor);
 	}
 	
