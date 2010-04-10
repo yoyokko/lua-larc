@@ -398,29 +398,242 @@ static int b_unpack (lua_State *L) {
   return lua_gettop(L) - 2;
 }
 
-static size_t _tobase(ulongestint li, int base, char *buf)
-{
-  lldiv_t dm;
+#define MAKELONG(a,b,c,d)	\
+	((((unsigned long)(a))<<24)|\
+	(((unsigned long)(b))<<16)|\
+	(((unsigned long)(c))<<8)|\
+	((unsigned long)(d)))
+static size_t _tobase85(ulongestint li, char *buf) {
+  unsigned char bytes[16];
+  size_t nbuf;
+  unsigned long l;
+  int i, n = 0;
+  if (li == 0) {
+    buf[0] = '!';
+	buf[1] = '!';
+    return 2;
+  }
+  for (i=0; i<16; i++, li>>=8) {
+    if (0!=(bytes[i] = (unsigned char)(li&255)))
+      n = i;
+  }
+  nbuf = 0;
+  for (; n>=3; n-=4) {
+    l = MAKELONG(bytes[n],bytes[n-1],bytes[n-2],bytes[n-3]);
+    if (l == 0)
+      buf[nbuf++] = 'z';
+    else {
+      for (i=0; i<5; i++) {
+        buf[4+nbuf-i] = '!' + (l%85);
+        l /= 85;
+      }
+      nbuf += 5;
+    }
+  }
+  switch (n) {
+  case 0:
+    l = MAKELONG(bytes[0],0,0,0);
+    l /= 85*85*85;
+    n = 2;
+    break;
+  case 1:
+    l = MAKELONG(bytes[1],bytes[0],0,0);
+    l /= 85*85;
+    n = 3;
+    break;
+  case 2:
+    l = MAKELONG(bytes[2],bytes[1],bytes[0],0);
+    l /= 85;
+    n = 4;
+    break;
+  default:
+    return nbuf;
+  }
+  nbuf += n;
+  for (i=1; i<=n; i++) {
+    buf[nbuf-i] = '!' + (l%85);
+	l /= 85;
+  }
+  return nbuf;
+}
+
+static size_t _tobase64(ulongestint li, char *buf) {
+  unsigned char bytes[16];
+  size_t nbuf;
+  unsigned long l;
+  int i, n = 0;
+  for (i=0; i<16; i++, li>>=8) {
+    if (0!=(bytes[i] = (unsigned char)(li&255)))
+      n = i;
+  }
+  nbuf = 0;
+  for (; n>=2; n-=3) {
+    l = MAKELONG(0,bytes[n],bytes[n-1],bytes[n-2]);
+    for (i=0; i<4; i++) {
+      unsigned char c = l % 64;
+      if (c == 63) c = '/';
+      else if (c == 62) c = '+';
+      else if (c >= 52) c += '0' - 52;
+      else if (c >= 26) c += 'a' - 26;
+      else c += 'A';
+      buf[3+nbuf-i] = c;
+      l /= 64;
+    }
+    nbuf += 4;
+  }
+  switch (n) {
+  case 0:
+    l = MAKELONG(0,bytes[0],0,0);
+    l /= 64*64;
+    n = 2;
+    break;
+  case 1:
+    l = MAKELONG(0,bytes[1],bytes[0],0);
+    l /= 64;
+    n = 3;
+    break;
+  default:
+    return nbuf;
+  }
+  nbuf += n;
+  for (i=1; i<=n; i++) {
+    unsigned char c = l % 64;
+    if (c == 63) c = '/';
+    else if (c == 62) c = '+';
+    else if (c >= 52) c += '0' - 52;
+    else if (c >= 26) c += 'a' - 26;
+    else c += 'A';
+    buf[nbuf-i] = c;
+    l /= 64;
+  }
+  for (i=n; i<4; i++)
+    buf[nbuf++] = '=';
+  return nbuf;
+}
+
+static size_t _tobase32(ulongestint li, char *buf) {
+  unsigned char bytes[16];
+  size_t nbuf;
+  unsigned long l,k;
+  int i, n = 0;
+  for (i=0; i<16; i++, li>>=8) {
+    if (0!=(bytes[i] = (unsigned char)(li&255)))
+      n = i;
+  }
+  nbuf = 0;
+  for (; n>=4; n-=5) {
+    l = MAKELONG(0,bytes[n],bytes[n-1],bytes[n-2]);
+	k = MAKELONG(0,bytes[n-2]&15,bytes[n-3],bytes[n-4]);
+	l /= 16;
+    for (i=0; i<4; i++) {
+      unsigned char c = l % 32;
+      if (c >= 26) c += '2' - 26;
+      else c += 'A';
+      buf[3+nbuf-i] = c;
+      l /= 32;
+	  c = k % 32;
+      if (c >= 26) c += '2' - 26;
+      else c += 'A';
+      buf[7+nbuf-i] = c;
+      k /= 32;
+    }
+    nbuf += 8;
+  }
+  switch (n) {
+  case 0:
+    k = 0;
+    l = MAKELONG(0,bytes[0],0,0);
+    l /= 32*32*16;
+    n = 2;
+    break;
+  case 1:
+    k = 0;
+    l = MAKELONG(0,bytes[1],bytes[0],0);
+    l /= 16;
+    n = 4;
+    break;
+  case 2:
+    k = MAKELONG(0,bytes[0]&15,0,0);
+    k /= 32*32*32;
+    l = MAKELONG(0,bytes[2],bytes[1],bytes[0]);
+    l /= 16;
+    n = 5;
+    break;
+  case 3:
+    k = MAKELONG(0,bytes[1]&15,bytes[0],0);
+    k /= 32;
+    l = MAKELONG(0,bytes[3],bytes[2],bytes[1]);
+    l /= 16;
+    n = 7;
+    break;
+  default:
+    return nbuf;
+  }
+  nbuf += n;
+  i = 1;
+  for (; i<=n-4; i++) {
+    unsigned char c = k % 32;
+    if (c >= 26) c += '2' - 26;
+    else c += 'A';
+    buf[nbuf-i] = c;
+    k /= 32;
+  }
+  for (; i<=n; i++) {
+    unsigned char c = l % 32;
+    if (c >= 26) c += '2' - 26;
+    else c += 'A';
+    buf[nbuf-i] = c;
+    l /= 32;
+  }
+  for (i=n; i<8; i++)
+    buf[nbuf++] = '=';
+  return nbuf;
+}
+
+static size_t _tobase2(ulongestint li, int bs, char *buf) {
+  static const char digits[] = "0123456789ABCDEF";
+  int mask = (1<<bs) - 1;
+  char *s = buf;
+  unsigned long rem;
+  size_t nbuf;
+  if (li == 0) {
+    *buf = '0';
+    return 1;
+  }
+  while (li) {
+    rem = li & mask;
+    li >>= bs;
+    *s++ = digits[rem];
+  }
+  nbuf = s - buf;
+  while (--s > buf) {
+    char c = *buf;
+    *buf++ = *s;
+    *s = c;
+  }
+  return nbuf;
+}
+
+static size_t _tobase(ulongestint li, int base, char *buf) {
+  ulongestint quot;
+  unsigned long rem;
   char *s;
-  int nbuf;
+  size_t nbuf;
   if (li == 0) {
     *buf = '0';
     return 1;
   }
   s = buf;
-  dm.quot = li;
-  while (dm.quot != 0) {
-    dm = lldiv(dm.quot, base);
-    if (dm.rem == 63)
-      *s++ = '/';
-    else if (dm.rem == 62)
-      *s++ = '+';
-    else if (dm.rem >= 36)
-      *s++ = 'a' - 36 + dm.rem;
-    else if (dm.rem >= 10)
-      *s++ = 'A' -10 + dm.rem;
+  quot = li;
+  while (quot != 0) {
+    rem = quot % base;
+    quot /= base;
+    if (rem >= 36)
+      *s++ = 'a' - 36 + rem;
+    else if (rem >= 10)
+      *s++ = 'A' - 10 + rem;
     else
-      *s++ = '0' + dm.rem;
+      *s++ = '0' + rem;
   }
   nbuf = s - buf;
   while (--s > buf) {
@@ -449,13 +662,27 @@ static int largeinttostring (lua_State *L) {
     s[1] = 'x';
     buflen += _tobase(li, 16, s+2);
   }
-/*
-  else if (base == 85)
+  else if (base == 85) {
     buflen = _tobase85(li, buf);
-  else if (base == 32)
+    pad = 0;
+  }
+  else if (base == 64) {
+    buflen = _tobase64(li, buf);
+    pad = 0;
+  }
+  else if (base == 32) {
     buflen = _tobase32(li, buf);
-*/
-  else if (base >= 2 && base <= 64)
+    pad = 0;
+  }
+  else if (base == 16)
+    buflen = _tobase2(li, 4, buf);
+  else if (base == 8)
+    buflen = _tobase2(li, 3, buf);
+  else if (base == 4)
+    buflen = _tobase2(li, 2, buf);
+  else if (base == 2)
+    buflen = _tobase2(li, 1, buf);
+  else if (base >= 2 && base <= 62)
     buflen = _tobase(li, base, buf);
   else
     return luaL_argerror(L, 2, "invalid base");

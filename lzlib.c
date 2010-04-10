@@ -26,28 +26,10 @@
 #include "lauxlib.h"
 
 #include "zlib.h"
+#include "shared.h"
 
 #define DEFLATE_MT	"larc.zlib.deflate"
 #define INFLATE_MT	"larc.zlib.inflate"
-
-#define GETINTOPTION(arg,opt)	{ \
-		lua_getfield(L, arg, #opt); \
-		opt = luaL_optint(L, -1, opt); \
-		lua_pop(L, 1); }
-#define SETCONSTANT(c)	{ \
-		lua_pushinteger(L, c); \
-		lua_setfield(L, -2, #c); }
-
-#if LUA_VERSION_NUM > 501
-static int lua_cpcall(lua_State *L, lua_CFunction func, void *ud)
-{
-	lua_CFunction pfunc = func;
-	lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_CPCALL);
-	lua_pushlightuserdata(L, &pfunc);
-	lua_pushlightuserdata(L, ud);
-	return lua_pcall(L, 2, 0, 0);
-}
-#endif
 
 typedef struct zlib_userdata
 {

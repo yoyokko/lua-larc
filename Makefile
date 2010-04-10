@@ -26,8 +26,14 @@ LUAINC= $(LUA)/include
 LUALIB= $(LUA)/lib
 LUABIN= $(LUA)/bin
 ZLIB= ../../Projects/zlib-1.2.3
+ZLIBINC= -I$(ZLIB)
+ZLIBLIB= $(ZLIB)/libz.a
 BZ2= ../../Projects/bzip2-1.0.5
+BZ2INC= -I$(BZ2)
+BZ2LIB= $(BZ2)/libbz2.a
 LZMA= ../../Projects/xz-4.999.9beta_20091209
+LZMAINC= -I$(LZMA)/src/liblzma/api
+LZMALIB= $(LZMA)/src/liblzma/.libs/liblzma.a
 
 #PLAT=unix
 #PLAT=cygwin
@@ -43,8 +49,8 @@ V= 0.0
 CC= gcc
 CFLAGS= $(INCS) $(WARN) -O2 $(G)
 WARN= -Wall
-INCS= -I$(LUAINC) -I$(ZLIB) -I$(BZ2)
-LIBS= -L$(ZLIB) -lz -L$(BZ2) -lbz2
+INCS= -I$(LUAINC) $(ZLIBINC) $(BZ2INC) $(LZMAINC)
+LIBS= 
 MAKESO= $(CC) $(G) -shared
 ifeq ($(PLAT),mingw32)
 LIBS+= $(LUABIN)/lua51.dll
@@ -84,16 +90,17 @@ struct.$(S): struct.o
 	$(MAKESO) -o $@ struct.o $(LIBS)
 
 zlib.$(S): lzlib.o
-	$(MAKESO) -o $@ lzlib.o $(LIBS)
+	$(MAKESO) -o $@ lzlib.o $(ZLIBLIB) $(LIBS)
 
 bzip2.$(S): lbzip2.o
-	$(MAKESO) -o $@ lbzip2.o $(LIBS)
+	$(MAKESO) -o $@ lbzip2.o $(BZ2LIB) $(LIBS)
 
 lzma.$(S): llzma.o
-	$(MAKESO) -o $@ llzma.o $(LZMA)/src/liblzma/.libs/liblzma.a $(LIBS)
+	$(MAKESO) -o $@ llzma.o $(LZMALIB) $(LIBS)
 
-llzma.o: llzma.c
-	$(CC) $(CFLAGS) -I$(LZMA)/src/liblzma/api -c -o $@ $<
+lzlib.o: lzlib.c shared.h
+lbzip2.o: lbzip2.c shared.h
+llzma.o: llzma.c shared.h
 
 clean:
 	rm -f $(OBJS) core core.*

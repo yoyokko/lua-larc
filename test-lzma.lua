@@ -21,23 +21,29 @@
        contributors may be used to endorse or promote products derived from 
        this software without specific prior written permission.
 --]==========================================================================]
-compr,used,status = assert(compress(hello))
-assert(used==#hello and status>=0)
-uncompr,used,status = assert(decompress(compr))
-assert(used==#compr and status>=0)
-assert(uncompr==hello)
-print("OK!")
+require"larc.lzma"
 
-deflate = assert(compressor{level=9})
-compr = ""
+hello = "hello, hello!"
+print("lzma version", larc.lzma.LZMA_VERSION)
+print("physical memory", larc.lzma.physmem())
+
+compress,decompress = larc.lzma.compress,larc.lzma.decompress
+compressor,decompressor = larc.lzma.compressor,larc.lzma.decompressor
+dofile("test-engine.lua")
+
+crc32 = larc.lzma.crc32(hello)
+assert(crc32==0xB39ADC9B)
+c = larc.lzma.crc32(nil)
 for i=1,#hello do
-  compr = compr .. assert(deflate(hello:sub(i,i)))
+  c = larc.lzma.crc32(c, hello:sub(i,i))
 end
-compr = compr .. assert(deflate())
-inflate = assert(decompressor())
-uncompr = ""
-for i=1,#compr do
-  uncompr = uncompr .. assert(inflate(compr:sub(i,i)))
+assert(c==crc32)
+print("OK!")
+crc64 = larc.lzma.crc64(hello)
+assert(crc64:tostring(64)=="gRhDAn8w9Xw=")
+c = larc.lzma.crc64(nil)
+for i=1,#hello do
+  c = larc.lzma.crc64(c, hello:sub(i,i))
 end
-assert(uncompr==hello)
+assert(c==crc64)
 print("OK!")
