@@ -2,7 +2,7 @@
 = Struct Module =
 
 Larc uses the struct module for reading and writing packed data. The module 
-was originally created by Roberto Ierusalimschy.
+was originally created by [http://www.inf.puc-rio.br/~roberto/struct/ Roberto Ierusalimschy].
 
 == Packed Data ==
 
@@ -19,16 +19,16 @@ There is no number when setting the endian mode.
 || `!` || Changes the maximum alignment, which must be a power of 2. Pad bytes are inserted before numbers so they will begin at a multiple of either the maximum alignement or the size of the number, whichever is lower.  ||
 || `x` || Skip the given number of bytes. NULL bytes are inserted when packing. If the number is 0, adds enough bytes so the next conversion will be aligned (which may be 0). Padding bytes themselves are never aligned.  ||
 || `b`/`B` || A signed (lower-case) or unsigned (upper-case) 8-bit number.  ||
-|| 'h'/'H' || A signed (lower-case) or unsigned (upper-case) 16-bit number.  ||
-|| 'l'/'L' || A signed (lower-case) or unsigned (upper-case) 32-bit number.  ||
-|| 'q'/'Q' || A signed (lower-case) or unsigned (upper-case) 64-bit number. A Lua number does not have enough precision to represent all 64-bit numbers. When necessary, a large integer userdata will be returned.  ||
-|| 'i'/'I' || A signed (lower-case) or unsigned (upper-case) in the given number of bytes. The default size is that of the native machine integer.  ||
-|| 'f' || A single-precision floating point number. The exact size is machine-dependant but is usually 4 bytes.  ||
-|| 'd' || A double-precision floating point number. The exact size is machine-dependant but is usually 8 bytes.  ||
-|| 'c' || A string with a given number of characters. Unpacked NULL bytes in the string will be preserved.  ||
-|| 's' || A string with no more than the given number of characters. Unpacked NULL bytes are removed.  ||
-|| 'u' || UTF-16 encoded string. The Lua string will be UTF-8 encoded.  ||
-|| 'U' || Unicode string with 32-bit characters. The Lua string will be UTF-8 encoded.  ||
+|| `h`/`H` || A signed (lower-case) or unsigned (upper-case) 16-bit number.  ||
+|| `l`/`L` || A signed (lower-case) or unsigned (upper-case) 32-bit number.  ||
+|| `q`/`Q` || A signed (lower-case) or unsigned (upper-case) 64-bit number. A Lua number does not have enough precision to represent all 64-bit numbers. When necessary, a large integer userdata will be returned.  ||
+|| `i`/`I` || A signed (lower-case) or unsigned (upper-case) in the given number of bytes. The default size is that of the native machine integer.  ||
+|| `f` || A single-precision floating point number. The exact size is machine-dependant but is usually 4 bytes.  ||
+|| `d` || A double-precision floating point number. The exact size is machine-dependant but is usually 8 bytes.  ||
+|| `c` || A string with a given number of characters. Unpacked NULL bytes in the string will be preserved.  ||
+|| `s` || A string with no more than the given number of characters. Unpacked NULL bytes are removed.  ||
+|| `u` || UTF-16 encoded string. The Lua string will be UTF-8 encoded.  ||
+|| `U` || Unicode string with 32-bit characters. The Lua string will be UTF-8 encoded.  ||
 
 ==== Repetition and Width ====
 For the plain numbers, `f`, `d`, `b`, `h`, `l`, `q`, and their unsigned 
@@ -49,7 +49,7 @@ string is packed, and the `s` format will add a terminating NULL.
 Unpacking a `c` format with zero width expects the code to be previously 
 unpacked value to be a number. The number will be popped from the stack 
 and used as the width of the string. So a Pascal-style string can be read 
-using ``"Bc0"`` and a single string with up to 255 characters will be 
+using `"Bc0"` and a single string with up to 255 characters will be 
 returned.
 
 Unpacking a `s` format with zero width will read up to the next NULL byte 
@@ -141,7 +141,7 @@ The number is always printed with the most significant bits first.
 Packed formats can save space by storing integers in a variable-length 
 encoding.
 
-==== VLI ===
+==== VLI ====
 A variable-length encoding used by the XZ file format. The integer is 
 divided into 7-bit units and the most significant units with all 0 bits 
 are discarded. Each unit is packed into an 8-bit byte with the least 
@@ -149,7 +149,7 @@ significant unit first. All bytes except for the last byte have the
 high bit set. Up to 9 bytes are used, so a maximum of 63 bits can be 
 encoded.
 
-===== MBI ===
+==== MBI ====
 A multi-byte integer encoding used by the 7z file format. If the integer 
 uses less than 8 bits, only a single byte is needed. Otherwise, the 
 first byte in the encoding will have 1, 2, or up to 8 of the highest bits 
@@ -196,4 +196,3 @@ requested number of bytes. If there are no bytes available, it should return
 `nil`. If the decoded integer is too large for a Lua number, then a large 
 integer may be returned. The number of bytes read is also returned. If the string 
 is empty, or the callback function returns `nil`, then `nil` is returned.
-
