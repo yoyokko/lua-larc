@@ -33,6 +33,8 @@
         the whole string; when unpacking, n==0 means use the previous
         read number as the string length
 ** s - zero-terminated string
+** u - UTF-16 zero-terminated string (from UTF-8 string)
+** U - 32-bit unicode string, zero-terminated
 ** f - float
 ** d - double
 ** ' ' - ignored
@@ -87,6 +89,8 @@ static void newlargeint (lua_State *L, largeinteger_t i) {
 
 static largeinteger_t getlargeint (lua_State *L, int i) {
   largeinteger_t li;
+  if (lua_isnoneornil(L, i))
+    luaL_argerror(L, i, "large integer expected, got no value");
   switch (lua_type(L, i)) {
     default: {
       char *e;
@@ -121,9 +125,218 @@ static size_t getnum (const char **fmt, size_t df) {
   }
 }
 
+static void * memchr2 (const void * ptr, int c, size_t nb) {
+  unsigned short * p = (unsigned short *)ptr;
+  unsigned short * q = p + (nb / 2);
+  while (p < q) {
+    if (*p++ == c)
+      return p-1;
+  }
+  return NULL;
+}
+
+static void * memchr4 (const void * ptr, int c, size_t nb) {
+  unsigned long * p = (unsigned long *)ptr;
+  unsigned long * q = p + (nb / 4);
+  while (p < q) {
+    if (*p++ == c)
+      return p-1;
+  }
+  return NULL;
+}
+
+
+static void strtounicode (lua_State *L, int arg, int width, int endian) {
+  luaL_Buffer b;
+  unsigned long uni;
+  size_t l;
+  const unsigned char *s = (const unsigned char *)luaL_checklstring(L, arg, &l);
+  const unsigned char *t = s + l;
+  luaL_buffinit(L, &b);
+  while (s < t) {
+    if (*s < 0x80)
+      uni = *s++;
+    else if (*s < 0xC0)
+      luaL_argerror(L, arg, "invalid utf-8");
+    else if (*s < 0xE0) {
+      if (t-s < 2) luaL_argerror(L, arg, "invalid utf-8");
+      if ((s[1]&0xC0) != 0x80) luaL_argerror(L, arg, "invalid utf-8");
+      uni = ((unsigned long)(s[0]&0x1F) << 6) | (s[1]&0x3F);
+      if (uni < 0x80) luaL_argerror(L, arg, "invalid utf-8");
+      s += 2;
+    }
+    else if (*s < 0xF0) {
+      if (t-s < 3) luaL_argerror(L, arg, "invalid utf-8");
+      if (((s[1]&0xC0) != 0x80) || ((s[2]&0xC0) != 0x80))
+       luaL_argerror(L, arg, "invalid utf-8");
+      uni = ((unsigned long)(s[0]&0xF) << 12) | 
+            ((unsigned long)(s[1]&0x3F) << 6) | (s[2]&0x3F);
+      if (uni < 0x800 || (uni&0xF800) == 0xD800) luaL_argerror(L, arg, "invalid utf-8");
+      s += 3;
+    }
+    else if (*s < 0xF8) {
+      if (t-s < 4) luaL_argerror(L, arg, "invalid utf-8");
+      if (((s[1]&0xC0) != 0x80) || ((s[2]&0xC0) != 0x80) || ((s[3]&0xC0) != 0x80))
+       luaL_argerror(L, arg, "invalid utf-8");
+      uni = ((unsigned long)(s[0]&0x7) << 18) | 
+            ((unsigned long)(s[1]&0x3F) << 12) | 
+            ((unsigned long)(s[2]&0x3F) << 6) | (s[3]&0x3F);
+      if (uni < 0x10000) luaL_argerror(L, arg, "invalid utf-8");
+      s += 4;
+    }
+    else if (*s < 0xFC) {
+      if (t-s < 5) luaL_argerror(L, arg, "invalid utf-8");
+      if (((s[1]&0xC0) != 0x80) || ((s[2]&0xC0) != 0x80) ||
+          ((s[3]&0xC0) != 0x80) || ((s[4]&0xC0) != 0x80))
+       luaL_argerror(L, arg, "invalid utf-8");
+      uni = ((unsigned long)(s[0]&0x3) << 24) | 
+            ((unsigned long)(s[1]&0x3F) << 18) | 
+            ((unsigned long)(s[2]&0x3F) << 12) | 
+            ((unsigned long)(s[3]&0x3F) << 6) | (s[4]&0x3F);
+      if (uni < 0x200000) luaL_argerror(L, arg, "invalid utf-8");
+      s += 5;
+    }
+    else if (*s < 0xFE) {
+      if (t-s < 6) luaL_argerror(L, arg, "invalid utf-8");
+      if (((s[1]&0xC0) != 0x80) || ((s[2]&0xC0) != 0x80) ||
+          ((s[3]&0xC0) != 0x80) || ((s[4]&0xC0) != 0x80) || ((s[5]&0xC0) != 0x80))
+       luaL_argerror(L, arg, "invalid utf-8");
+      uni = ((unsigned long)(s[0]&0x1) << 30) | 
+            ((unsigned long)(s[1]&0x3F) << 24) | 
+            ((unsigned long)(s[2]&0x3F) << 18) | 
+            ((unsigned long)(s[3]&0x3F) << 12) | 
+            ((unsigned long)(s[4]&0x3F) << 6) | (s[5]&0x3F);
+      if (uni < 0x4000000) luaL_argerror(L, arg, "invalid utf-8");
+      s += 6;
+    }
+    else
+      luaL_argerror(L, arg, "invalid utf-8");
+    if (width == 2) {
+      if (uni >= 0x110000)
+        luaL_argerror(L, arg, "unicode character out of range");
+      if (uni < 0x10000) {
+        if (endian == BIG) {
+          luaL_addchar(&b, uni>>8);
+          luaL_addchar(&b, uni);
+        }
+        else {
+          luaL_addchar(&b, uni);
+          luaL_addchar(&b, uni>>8);
+        }
+      }
+      else {
+        unsigned long w1,w2;
+        uni -= 0x10000;
+        w1 = (uni>>10) | 0xD800;
+        w2 = (uni&0x3FF) | 0xDC00;
+        if (endian == BIG) {
+          luaL_addchar(&b, w1>>8);
+          luaL_addchar(&b, w1);
+          luaL_addchar(&b, w2>>8);
+          luaL_addchar(&b, w2);
+        }
+        else {
+          luaL_addchar(&b, w1);
+          luaL_addchar(&b, w1>>8);
+          luaL_addchar(&b, w2);
+          luaL_addchar(&b, w2>>8);
+        }
+      }
+    }
+    else {
+      if (endian == BIG) {
+        luaL_addchar(&b, uni>>24);
+        luaL_addchar(&b, uni>>16);
+        luaL_addchar(&b, uni>>8);
+        luaL_addchar(&b, uni);
+      }
+      else {
+        luaL_addchar(&b, uni);
+        luaL_addchar(&b, uni>>8);
+        luaL_addchar(&b, uni>>16);
+        luaL_addchar(&b, uni>>24);
+      }
+    }
+  }
+  luaL_pushresult(&b);
+  lua_replace(L, arg);
+}
+
+static void unicodetostr (lua_State *L, const char *str, size_t len, int width, int endian) {
+  luaL_Buffer b;
+  unsigned long uni;
+  const unsigned char *s = (const unsigned char *)str;
+  const unsigned char *t = s + (len / width) * width;
+  luaL_buffinit(L, &b);
+  while (s < t) {
+    if (width == 4) {
+      if (endian == BIG)
+        uni = (s[0]<<24) | (s[1]<<16) | (s[2]<<8) | (s[3]);
+      else
+        uni = (s[0]) | (s[1]<<8) | (s[2]<<16) | (s[3]<<24);
+      if ((uni&0xFFFFF800UL) == 0xD800) luaL_error(L, "invalid unicode character");
+      s += 4;
+    }
+    else {
+      if (endian == BIG)
+        uni = (s[0]<<8) | (s[1]);
+      else
+        uni = (s[0]) | (s[1]<<8);
+      s += 2;
+      if ((uni & 0xF800) == 0xD800) {
+        unsigned long w;
+        if (s >= t)
+          luaL_error(L, "invalid utf-16");
+        if (endian == BIG)
+          w = (s[0]<<8) | (s[1]);
+        else
+          w = (s[0]) | (s[1]<<8);
+        if ((w & 0xFC00) != 0xDC00)
+          luaL_error(L, "invalid utf-16");
+        s += 2;
+        uni = (((uni&0x3FF)<<10) | (w&0x3FF)) + 0x10000;
+      }
+    }
+    if (uni < 0x80)
+      luaL_addchar(&b, uni);
+    else if (uni < 0x800) {
+      luaL_addchar(&b, (uni>>6)|0xC0);
+      luaL_addchar(&b, (uni&0x3F)|0x80);
+    }
+    else if (uni < 0x10000) {
+      luaL_addchar(&b, (uni>>12)|0xE0);
+      luaL_addchar(&b, ((uni>>6)&0x3F)|0x80);
+      luaL_addchar(&b, (uni&0x3F)|0x80);
+    }
+    else if (uni < 0x200000) {
+      luaL_addchar(&b, (uni>>18)|0xF0);
+      luaL_addchar(&b, ((uni>>12)&0x3F)|0x80);
+      luaL_addchar(&b, ((uni>>6)&0x3F)|0x80);
+      luaL_addchar(&b, (uni&0x3F)|0x80);
+    }
+    else if (uni < 0x4000000) {
+      luaL_addchar(&b, (uni>>24)|0xF8);
+      luaL_addchar(&b, ((uni>>18)&0x3F)|0x80);
+      luaL_addchar(&b, ((uni>>12)&0x3F)|0x80);
+      luaL_addchar(&b, ((uni>>6)&0x3F)|0x80);
+      luaL_addchar(&b, (uni&0x3F)|0x80);
+    }
+    else if (uni < 0x80000000UL) {
+      luaL_addchar(&b, (uni>>30)|0xFC);
+      luaL_addchar(&b, ((uni>>24)&0x3F)|0x80);
+      luaL_addchar(&b, ((uni>>18)&0x3F)|0x80);
+      luaL_addchar(&b, ((uni>>12)&0x3F)|0x80);
+      luaL_addchar(&b, ((uni>>6)&0x3F)|0x80);
+      luaL_addchar(&b, (uni&0x3F)|0x80);
+    }
+    else
+      luaL_error(L, "unicode character out of range");
+  }
+  luaL_pushresult(&b);
+}
+
 
 #define defaultoptions(h)    ((h)->endian = native.endian, (h)->align = 1)
-
 
 
 static size_t optsize (lua_State *L, char opt, const char **fmt, size_t *rep) {
@@ -136,11 +349,17 @@ static size_t optsize (lua_State *L, char opt, const char **fmt, size_t *rep) {
     case 'd': *rep = getnum(fmt, 1);  return sizeof(double);
     case 'x': case 'c': return getnum(fmt, 1);
     case 's': return getnum(fmt, 0);
+    case 'u': return 2*getnum(fmt, 0);
+    case 'U': return 4*getnum(fmt, 0);
     case ' ': case '<': case '>': case '!': return 0;
     case 'i': case 'I': {
       size_t sz = getnum(fmt, sizeof(int));
+      /*
       if (!isp2(sz))
         luaL_error(L, "integral size %d is not a power of 2", sz);
+      */
+      if (!sz)
+        luaL_error(L, "integral size must be greater than zero");
       if (sz > sizeof(largeinteger_t))
         luaL_error(L, "integral size %d is too large", sz);
       return sz;
@@ -154,7 +373,10 @@ static size_t optsize (lua_State *L, char opt, const char **fmt, size_t *rep) {
 
 
 static int gettoalign (size_t len, Header *h, int opt, size_t size) {
-  if (size == 0 || opt == 'c') return 0;
+  if (opt == 'x' && size == 0) size = h->align;
+  else if (size == 0 || opt == 'c' || opt == 's' || opt == 'x') return 0;
+  else if (opt == 'u') size = 2;
+  else if (opt == 'U') size = 4;
   if (size > (size_t)h->align) size = h->align;  /* respect max. alignment */
   return  (size - (len & (size - 1))) & (size - 1);
 }
@@ -167,6 +389,8 @@ static void commoncases (lua_State *L, int opt, const char **fmt, Header *h) {
     case '<': h->endian = LITTLE; return;
     case '!': {
       int a = getnum(fmt, MAXALIGN);
+      if (!a)
+        luaL_error(L, "alignment must be greater than zero");
       if (!isp2(a))
         luaL_error(L, "alignment %d is not a power of 2", a);
       h->align = a;
@@ -247,6 +471,9 @@ static int b_pack (lua_State *L) {
           luaL_addlstring(&b, (char *)&d, size);
           break;
         }
+        case 'u': case 'U':
+          strtounicode(L, arg, opt=='U'?4:2, h.endian);
+          /* continue as string */
         case 'c': case 's': {
           size_t l;
           size_t sz = size;
@@ -254,7 +481,7 @@ static int b_pack (lua_State *L) {
           if (size == 0) size = l;
           if (l < size) {
             luaL_addlstring(&b, s, l);
-            while (l++ > size)
+            while (l++ < size)
               luaL_addchar(&b, '\0');
           }
           else
@@ -262,6 +489,18 @@ static int b_pack (lua_State *L) {
           if (opt == 's' && sz == 0) {
             luaL_addchar(&b, '\0');  /* add zero at the end */
             size++;
+          }
+          else if (opt == 'u' && sz == 0) {
+            luaL_addchar(&b, '\0');
+            luaL_addchar(&b, '\0');
+            size+=2;
+          }
+          else if (opt == 'U' && sz == 0) {
+            luaL_addchar(&b, '\0');
+            luaL_addchar(&b, '\0');
+            luaL_addchar(&b, '\0');
+            luaL_addchar(&b, '\0');
+            size+=4;
           }
           break;
         }
@@ -310,7 +549,7 @@ static void getinteger (lua_State *L, const char *buff, int endian,
 static int b_unpack (lua_State *L) {
   Header h;
   const char *fmt = luaL_checkstring(L, 1);
-  size_t ld;
+  size_t ld, ls;
   const char *data = luaL_checklstring(L, 2, &ld);
   size_t pos = luaL_optinteger(L, 3, 1) - 1;
   defaultoptions(&h);
@@ -320,6 +559,16 @@ static int b_unpack (lua_State *L) {
     lua_pushliteral(L, "data string too short");
     return 2;
   }
+  ls = 1;
+  while (*fmt) {
+    int opt = *fmt++;
+    size_t rep = 1;
+    size_t size = optsize(L, opt, &fmt, &rep);
+    if (size != 0 && opt != 'x')
+      ls += rep;
+  }
+  luaL_checkstack(L, ls, "too many values to unpack");
+  fmt = lua_tostring(L, 1);
   while (*fmt) {
     int opt = *fmt++;
     size_t rep = 1;
@@ -371,9 +620,15 @@ static int b_unpack (lua_State *L) {
           lua_pushlstring(L, data+pos, size);
           break;
         }
-        case 's': {
+        case 's': case 'u': case 'U': {
           size_t sz = size==0 ? (ld-pos) : size;
-          const char *e = (const char *)memchr(data+pos, '\0', sz);
+          const char *e;
+          if (opt == 'U')
+            e = (const char *)memchr4(data+pos, 0, sz);
+          else if (opt == 'u')
+            e = (const char *)memchr2(data+pos, 0, sz);
+          else
+            e = (const char *)memchr(data+pos, 0, sz);
           if (e == NULL) {
             if (size == 0) {
               lua_pushnil(L);
@@ -384,9 +639,12 @@ static int b_unpack (lua_State *L) {
           else {
             sz = e - (data+pos);
             if (size == 0)
-              size = sz + 1;
+              size = sz + (opt=='U'?4:opt=='u'?2:1);
           }
-          lua_pushlstring(L, data+pos, sz);
+          if (opt != 's')
+            unicodetostr(L, data+pos, sz, opt=='U'?4:2, h.endian);
+          else
+            lua_pushlstring(L, data+pos, sz);
           break;
         }
         default: commoncases(L, opt, &fmt, &h);
@@ -403,7 +661,7 @@ static int b_unpack (lua_State *L) {
 	(((unsigned long)(b))<<16)|\
 	(((unsigned long)(c))<<8)|\
 	((unsigned long)(d)))
-static size_t _tobase85(ulongestint li, char *buf) {
+static size_t _tobase85 (ulongestint li, char *buf) {
   unsigned char bytes[16];
   size_t nbuf;
   unsigned long l;
@@ -457,7 +715,7 @@ static size_t _tobase85(ulongestint li, char *buf) {
   return nbuf;
 }
 
-static size_t _tobase64(ulongestint li, char *buf) {
+static size_t _tobase64 (ulongestint li, char *buf) {
   unsigned char bytes[16];
   size_t nbuf;
   unsigned long l;
@@ -511,7 +769,7 @@ static size_t _tobase64(ulongestint li, char *buf) {
   return nbuf;
 }
 
-static size_t _tobase32(ulongestint li, char *buf) {
+static size_t _tobase32 (ulongestint li, char *buf) {
   unsigned char bytes[16];
   size_t nbuf;
   unsigned long l,k;
@@ -590,7 +848,7 @@ static size_t _tobase32(ulongestint li, char *buf) {
   return nbuf;
 }
 
-static size_t _tobase2(ulongestint li, int bs, char *buf) {
+static size_t _tobase2n (ulongestint li, int bs, char *buf) {
   static const char digits[] = "0123456789ABCDEF";
   int mask = (1<<bs) - 1;
   char *s = buf;
@@ -614,7 +872,7 @@ static size_t _tobase2(ulongestint li, int bs, char *buf) {
   return nbuf;
 }
 
-static size_t _tobase(ulongestint li, int base, char *buf) {
+static size_t _tobase (ulongestint li, int base, char *buf) {
   ulongestint quot;
   unsigned long rem;
   char *s;
@@ -660,7 +918,7 @@ static int largeinttostring (lua_State *L) {
     }
     s[0] = '0';
     s[1] = 'x';
-    buflen += _tobase(li, 16, s+2);
+    buflen += _tobase2n(li, 4, s+2);
   }
   else if (base == 85) {
     buflen = _tobase85(li, buf);
@@ -675,13 +933,13 @@ static int largeinttostring (lua_State *L) {
     pad = 0;
   }
   else if (base == 16)
-    buflen = _tobase2(li, 4, buf);
+    buflen = _tobase2n(li, 4, buf);
   else if (base == 8)
-    buflen = _tobase2(li, 3, buf);
+    buflen = _tobase2n(li, 3, buf);
   else if (base == 4)
-    buflen = _tobase2(li, 2, buf);
+    buflen = _tobase2n(li, 2, buf);
   else if (base == 2)
-    buflen = _tobase2(li, 1, buf);
+    buflen = _tobase2n(li, 1, buf);
   else if (base >= 2 && base <= 62)
     buflen = _tobase(li, base, buf);
   else
@@ -762,7 +1020,7 @@ static int modlargeint (lua_State *L) {
   largeinteger_t a, b;
   a = getlargeint(L, 1);
   b = getlargeint(L, 2);
-  a /= b;
+  a %= b;
   newlargeint(L, a);
   return 1;
 }
@@ -810,6 +1068,181 @@ static int b_largeint (lua_State *L) {
   return 1;
 }
 
+
+static int b_packvli (lua_State *L) {
+  luaL_Buffer b;
+  ulongestint ul;
+  largeinteger_t li = getlargeint(L, 1);
+  if (li > LLONG_MAX/2 || li < 0/*LLONG_MIN/2*/)
+    return luaL_argerror(L, 1, "integer out of range");
+  luaL_buffinit(L, &b);
+  ul = (ulongestint)li & (ULLONG_MAX/2);
+  while (ul >= 0x80) {
+    luaL_addchar(&b, ((unsigned char)ul)|0x80);
+    ul >>= 7;
+  }
+  luaL_addchar(&b, (unsigned char)ul);
+  luaL_pushresult(&b);
+  return 1;
+}
+
+static int b_unpackvli (lua_State *L) {
+  ulongestint ul;
+  size_t nb;
+  int argt;
+  lua_settop(L, 1);
+  argt = lua_type(L, 1);
+  if (argt == LUA_TFUNCTION || argt == LUA_TUSERDATA || argt == LUA_TTABLE) {
+    size_t l;
+    const char *s;
+    unsigned char c;
+    ul = 0;
+    nb = 0;
+    lua_pushvalue(L, 1);
+    lua_pushinteger(L, 1);
+    lua_call(L, 1, 1);
+    if (lua_isnil(L, -1)) {
+      lua_pushinteger(L, 0);
+      return 2;
+    }
+    s = lua_tolstring(L, -1, &l);
+    if (s == NULL || l == 0)
+      return luaL_error(L, "unterminated long integer");
+    c = *s;
+    lua_pop(L, 1);
+    nb++;
+    ul = c & 0x7F;
+    while (c & 0x80) {
+      lua_pushvalue(L, 1);
+      lua_pushinteger(L, 1);
+      lua_call(L, 1, 1);
+      s = lua_tolstring(L, -1, &l);
+      if (s == NULL || l == 0 || nb++ >= 9)
+        return luaL_error(L, "unterminated long integer");
+      c = *s;
+      lua_pop(L, 1);
+      ul |= (ulongestint)(c & 0x7F) << (nb * 7);
+    }
+  }
+  else {
+    size_t l;
+    const char *s = luaL_checklstring(L, 1, &l);
+    if (l == 0)
+      return luaL_error(L, "unterminated long integer");
+    if (l > 9)
+      l = 9;
+    ul = 0;
+    nb = 0;
+    ul = (unsigned char)s[0] & 0x7F;
+    while (s[nb++] & 0x80) {
+      if (nb >= l || s[nb] == 0)
+        return luaL_error(L, "unterminated long integer");
+      ul |= (ulongestint)((unsigned char)s[nb] & 0x7F) << (nb * 7);
+    }
+  }
+  /*ul |= (ul<<1) & (ULLONG_MAX/2 + 1);*/
+  if (ul > LONGESTMAX)
+    newlargeint(L, (longestint)ul);
+  else
+    lua_pushnumber(L, (lua_Number)(longestint)ul);
+  lua_pushinteger(L, nb);
+  return 2;
+}
+
+
+static int b_packmbi (lua_State *L) {
+  luaL_Buffer b;
+  size_t n;
+  ulongestint ul;
+  ulongestint li = getlargeint(L, 1);
+  luaL_buffinit(L, &b);
+  n = 0;
+  ul = li;
+  while (ul > 0x7F) {
+    n++;
+	ul >>= 7;
+  }
+  luaL_addchar(&b, (unsigned char)(0xFF << (8-n)) | (ul >> n));
+  while (n-- > 0) {
+    luaL_addchar(&b, (unsigned char)li);
+    li >>= 8;
+  }
+  luaL_pushresult(&b);
+  return 1;
+}
+
+static int b_unpackmbi (lua_State *L) {
+  ulongestint ul;
+  size_t nb;
+  int argt;
+  lua_settop(L, 1);
+  argt = lua_type(L, 1);
+  if (argt == LUA_TFUNCTION || argt == LUA_TUSERDATA || argt == LUA_TTABLE) {
+    size_t l;
+    const char *s;
+    unsigned char c;
+    ul = 0;
+    nb = 0;
+    lua_pushvalue(L, 1);
+    lua_pushinteger(L, 1);
+    lua_call(L, 1, 1);
+    if (lua_isnil(L, -1)) {
+      lua_pushinteger(L, 0);
+      return 2;
+    }
+    s = lua_tolstring(L, -1, &l);
+    if (s == NULL || l == 0)
+      return luaL_error(L, "unterminated long integer");
+    c = *s;
+    lua_pop(L, 1);
+    while (c & 0x80) {
+      nb++;
+      c <<= 1;
+    }
+    ul = (ulongestint)c << (nb*7);
+    if (nb > 0) {
+      lua_pushvalue(L, 1);
+      lua_pushinteger(L, nb);
+      lua_call(L, 1, 1);
+      s = lua_tolstring(L, -1, &l);
+      if (s == NULL || l < nb)
+        return luaL_error(L, "unterminated long integer");
+      for (l=0; l<nb; l++) {
+        ul |= (ulongestint)(unsigned char)s[l] << (8*l);
+      }
+      lua_pop(L, 1);
+    }
+    nb++;
+  }
+  else {
+    size_t l;
+    const char *s = luaL_checklstring(L, 1, &l);
+    unsigned char c;
+    if (l == 0)
+      return luaL_error(L, "unterminated long integer");
+    ul = 0;
+    nb = 0;
+    c = *s;
+    while (c & 0x80) {
+      nb++;
+      c <<= 1;
+    }
+    ul = (ulongestint)c << (nb*7);
+    if (nb >= l)
+      return luaL_error(L, "unterminated long integer");
+    for (l=0; l<nb; l++) {
+      ul |= (ulongestint)(unsigned char)s[l+1] << (8*l);
+    }
+    nb++;
+  }
+  if ((longestint)ul > LONGESTMAX || (longestint)ul < LONGESTMIN)
+    newlargeint(L, (longestint)ul);
+  else
+    lua_pushnumber(L, (lua_Number)(longestint)ul);
+  lua_pushinteger(L, nb);
+  return 2;
+}
+
 /* }====================================================== */
 
 
@@ -840,6 +1273,10 @@ static const struct luaL_reg thislib[] = {
   {"pack", b_pack},
   {"unpack", b_unpack},
   {"largeinteger", b_largeint},
+  {"packvli", b_packvli},
+  {"unpackvli", b_unpackvli},
+  {"packmbi", b_packmbi},
+  {"unpackmbi", b_unpackmbi},
   {NULL, NULL}
 };
 
