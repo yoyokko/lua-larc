@@ -61,6 +61,7 @@ local iopen = io.open
 local strsub,concat = string.sub,table.concat
 local gsub,strfind,strlower = string.gsub,string.find,string.lower
 local int,modf = math.floor,math.modf
+local tostring = tostring
 
 local struct = require"larc.struct"
 local strunpack = struct.unpack
@@ -105,6 +106,22 @@ local function bz2_compress(zip)
   return bz2.compressor{blocksize=9}
 end
 
+--[[LZMA compression.
+  ]]
+local function lzma_decompress(zip)
+  local lzma = require"larc.lzma"
+  local ver,sz = strunpack("<H2", zip._handle:read(4))
+  local filter = lzma.filter("lzma1", zip._handle:read(sz))
+  return lzma.decompressor{format="raw", filter=filter}
+end
+local function lzma_compress(zip)
+  local lzma = require"larc.lzma"
+  local filter = lzma.filter("lzma1")
+  local prop = tostring(filter)
+  zip._handle:write("\4\65", strpack("<H",#prop), prop)
+  return lzma.compressor{format="raw",filter=filter}
+end
+
 --[[Table of compression factories.
   ]]
 local decompress_engine = {
@@ -112,7 +129,7 @@ local decompress_engine = {
   [8] = zlib_decompress;
 --[9] = deflate64_decompress;
   [12] = bzip2_decompress;
---[14] = lzma_decompress;
+  [14] = lzma_decompress;
 --[19] = lz77_decompress;
 --[98] = ppmd_decompress;
 }
@@ -120,6 +137,7 @@ local decompress_engine = {
 local compress_engine = {
   [0] = stored_compress;
   [12] = bzip2_compress;
+  [14] = lzma_compress;
 }
 
 --[[When set, names in the archive are set to lower-case.

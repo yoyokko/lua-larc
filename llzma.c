@@ -290,7 +290,10 @@ static int larc_lzmafilter_new(lua_State *L)
 		}
 		else if (lua_istable(L, 2))
 		{
-			int o = lzmafilter_option(L, 2, "mode", lzmamode_opts);
+			int o = lzmafilter_optint(L, 2, "preset", -1);
+			if (o >= 0)
+				lzma_lzma_preset(&filter->options.lzma, o<=9?o:9);
+			o = lzmafilter_option(L, 2, "mode", lzmamode_opts);
 			filter->options.lzma.mode = lzmamode_ids[o];
 			o = lzmafilter_option(L, 2, "mf", matchfinder_opts);
 			filter->options.lzma.mf = matchfinder_ids[o];

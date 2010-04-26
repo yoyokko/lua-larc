@@ -1282,11 +1282,12 @@ static const struct luaL_reg thislib[] = {
 
 
 LUAMOD_API int luaopen_larc_struct (lua_State *L) {
-  luaL_newmetatable(L, LARGETYPE);
-  luaL_register(L, NULL, largeintMT);
-  lua_pushliteral(L, "__index");
-  lua_pushvalue(L, -2);
-  lua_settable(L, -3);
+  if (luaL_newmetatable(L, LARGETYPE)) {
+    luaL_register(L, NULL, largeintMT);
+    lua_pushliteral(L, "__index");
+    lua_pushvalue(L, -2);
+    lua_settable(L, -3);
+  }
   lua_pop(L, 1);
   luaL_register(L, "larc.struct", thislib);
   return 1;
