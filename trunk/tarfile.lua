@@ -33,6 +33,8 @@ local modf = math.modf
 local iopen = io.open
 local rawset,pairs = rawset,pairs
 
+local lfs = require "larc.filesystem"
+
 module "larc.tarfile"
 
 local POSIX_FORMAT = "ustar\00000"
@@ -46,9 +48,13 @@ local FTYPE_BDEV = "4"
 local FTYPE_DIR = "5"
 local FTYPE_PIPE = "6"
 local FTYPE_CONT = "7"
+local FTYPE_GNU_DIRECTORY = "D"
 local FTYPE_GNU_LONGNAME = "L"
 local FTYPE_GNU_LONGLINK = "K"
+local FTYPE_GNU_MULTI = "M"
+local FTYPE_GNU_NAMES = "N"
 local FTYPE_GNU_SPARSE = "S"
+local FTYPE_GNU_VOLUME = "V"
 local FTYPE_POSIX_GLOBAL = "g"
 local FTYPE_POSIX_EXT = "x"
 local FTYPE_SOLARIS_EXT = "X"
@@ -62,7 +68,8 @@ local tar_type_name = {
   [FTYPE_BDEV] = "block device";
   [FTYPE_DIR] = "directory";
   [FTYPE_PIPE] = "fifo";
-  [FTYPE_CONT] = "regular"; -- I have no idea what this means
+  [FTYPE_CONT] = "regular";
+  [FTYPE_GNU_DIRECTORY] = "directory";
   [FTYPE_GNU_LONGNAME] = "Name Extension";
   [FTYPE_GNU_LONGLINK] = "Link Extension";
   [FTYPE_GNU_SPARSE] = "regular";
@@ -86,7 +93,7 @@ local function unpackstring(s, i, n)
   i = i or 1
   n = n or -1
   local pos = find(s, '\0', i, true)
-  if pos - i < n then
+  if pos and pos - i < n then
     return sub(s, i, pos-1)
   end
   return sub(s, i, i+n-1)
@@ -100,8 +107,8 @@ local function unpacknumber(s, i, n)
     return _s2n(n*256 + b, ...)
   end
   if char(sub(s,i,i)) ~= 128 then
-    -- libarchive puts spaces where a NULL should be
-    return tonumber(match(s, " *([0-7]+)[ %z]", i) or 0, 8)
+    -- space or NULL ... make up your *** mind
+    return tonumber(match(s, "^ *([0-7]+)[ %z]", i) or 0, 8)
   else
     return _s2n(0, byte(s, i+1, i+n-1))
   end
@@ -131,12 +138,16 @@ end
 local pax_copy_fields = {
   size='size',
   mtime='mtime',
+  atime='atime',
+  ctime='ctime',
   uid='uid',
   gid='gid',
   uname='user',
   gname='group',
   path='name',
-  linkpath='linkname'
+  linkpath='linkname',
+  ['SCHILY.devminor']='devmajor',
+  ['SCHILY.devmajor']='devminor',
 }
 local pax_number_fields = {
   'size',
@@ -145,6 +156,11 @@ local pax_number_fields = {
   'mtime',
   'uid',
   'gid',
+  'SCHILY.devminor',
+  'SCHILY.devmajor',
+  'SCHILY.dev',
+  'SCHILY.ino',
+  'SCHILY.nlinks',
 }
 local function add_pax(file)
   local pax = file.pax
@@ -152,9 +168,6 @@ local function add_pax(file)
     if pax[p] then
       file[f or p] = pax[p]
     end
-  end
-  local function _num(f)
-    pax[f] = tonumber(pax[f])
   end
   if not pax then
     return
@@ -238,10 +251,10 @@ function tarfile:read(size)
   size = size + self._bpos
   self._block = ""
   self._bpos = 0
-  while size > 4096 do
-    buffer[#buffer+1] = assert(self._handle:read(4096), "unexpected end-of-file")
-    self._rem = self._rem - 4096
-    size = size - 4096
+  while size > 10240 do
+    buffer[#buffer+1] = assert(self._handle:read(10240), "unexpected end-of-file")
+    self._rem = self._rem - 10240
+    size = size - 10240
   end
   while size > 512 do
     buffer[#buffer+1] = assert(self._handle:read(512), "unexpected end-of-file")
@@ -343,6 +356,9 @@ local function tar_readheader(tar, file)
   file.position = tar._handle:seek()
   file.size = unpacknumber(block, 125, 12)
   file.type = sub(block, 157, 157)
+  if file.type == FTYPE_REG0 then
+    file.type = FTYPE_REG
+  end
   if tar._pax then
     local pax = {}
     for k,v in pairs(tar._pax) do
@@ -354,11 +370,14 @@ local function tar_readheader(tar, file)
 end
 
 local function tar_readheader_file(tar, file, block)
+  local magic = sub(block, 258, 265)
   if not file.name then -- Name may already been set by a previous header
     file.name = unpackstring(block, 1, 100)
-    local prefix = unpackstring(block, 346, 155)
-    if prefix ~= "" then
-      file.name = prefix .. "/" .. file.name
+    if magic == POSIX_FORMAT then
+      local prefix = unpackstring(block, 346, 155)
+      if prefix ~= "" then
+        file.name = prefix .. "/" .. file.name
+      end
     end
   end
   file.mode = unpacknumber(block, 101, 8)
@@ -367,7 +386,11 @@ local function tar_readheader_file(tar, file, block)
   file.gid = unpacknumber(block, 117, 8)
   file.group = unpackstring(block, 298, 32)
   file.mtime = unpacknumber(block, 137, 12)
-  if file.type == FTYPE_REG0 and sub(file.name, -1)=='/' then
+  if magic == GNU_FORMAT then
+    file.atime = unpacknumber(block, 346, 12)
+    file.ctime = unpacknumber(block, 358, 12)
+  end
+  if file.type == FTYPE_REG and sub(file.name, -1)=='/' then
     file.type = FTYPE_DIR
   end
   if file.pax then
@@ -377,8 +400,14 @@ local function tar_readheader_file(tar, file, block)
 end
 
 local function tar_readheader_device(tar, file, block)
-  file.major = unpacknumber(block, 330, 8)
-  file.minor = unpacknumber(block, 338, 8)
+  file.devmajor = unpacknumber(block, 330, 8)
+  file.devminor = unpacknumber(block, 338, 8)
+  file.size = 0
+  return tar_readheader_file(tar, file, block)
+end
+
+local function tar_readheader_special(tar, file, block)
+  file.size = 0
   return tar_readheader_file(tar, file, block)
 end
 
@@ -386,20 +415,21 @@ local function tar_readheader_link(tar, file, block)
   if not file.linkname then
     file.linkname = unpacknumber(block, 158, 100)
   end
+  file.size = 0
   return tar_readheader_file(tar, file, block)
 end
 
 local function tar_readheader_sparse(tar, file, block)
-  local chunk = {}
   local pos = 0
+  local chunkhead = {}
+  local chunk = chunkhead
   for i = 387,459,24 do
     local o,s = unpacknumber(block, i, 12), unpacknumber(block, i+12, 12)
-    chunk.start = o
-    chunk.size = s
-    chunk.position = pos
-    chunk.prev = file.sparse_struct
-    file.sparse_struct = chunk
-    pos = pos + size
+    if s ~= 0 then
+      chunk.next = { start=o, size=s, position=pos }
+      chunk = chunk.next
+      pos = pos + size
+    end
   end
   local extended = byte(block, 483)
   while extended ~= 0 do
@@ -407,15 +437,15 @@ local function tar_readheader_sparse(tar, file, block)
     file.headersize = file.headersize + #eblock
     for i = 1,457,24 do
       local o,s = unpacknumber(eblock, i, 12), unpacknumber(eblock, i+12, 12)
-      chunk.start = o
-      chunk.size = s
-      chunk.position = pos
-      chunk.prev = file.sparse_struct
-      file.sparse_struct = chunk
-      pos = pos + size
+      if s ~= 0 then
+        chunk.next = { start=o, size=s, position=pos }
+        chunk = chunk.next
+        pos = pos + size
+      end
     end
     extended = byte(eblock, 505)
   end
+  file.sparse_struct = chunkhead.next
   file.real_size = unpacknumber(block, 484, 12)
   file.position = tar._handle:seek()
   return tar_readheader_file(tar, file, block)
@@ -433,6 +463,14 @@ local function tar_readheader_longname(tar, file, block)
   file.name = unpackstring(block)
   file.headersize = file.headersize + #block
   return tar_readheader(tar, file)
+end
+
+local function tar_readheader_longdir(tar, file, block)
+  error("GNU directory entries are not supported")
+end
+
+local function tar_readheader_multipart(tar, file, block)
+  error("GNU multi-volume archives are not supported")
 end
 
 local function tar_readheader_pax(tar, file, block)
@@ -465,12 +503,16 @@ tar_readheader_types[FTYPE_LINK] = tar_readheader_link
 tar_readheader_types[FTYPE_SYMLINK] = tar_readheader_link
 tar_readheader_types[FTYPE_CDEV] = tar_readheader_device
 tar_readheader_types[FTYPE_BDEV] = tar_readheader_device
-tar_readheader_types[FTYPE_PIPE] = tar_readheader_file
-tar_readheader_types[FTYPE_CONT] = tar_readheader_file
+tar_readheader_types[FTYPE_PIPE] = tar_readheader_special
+tar_readheader_types[FTYPE_CONT] = tar_readheader_special
 tar_readheader_types[FTYPE_DIR] = tar_readheader_file
+tar_readheader_types[FTYPE_GNU_DIRECTORY] = tar_readheader_longdir
 tar_readheader_types[FTYPE_GNU_LONGLINK] = tar_readheader_longlink
 tar_readheader_types[FTYPE_GNU_LONGNAME] = tar_readheader_longname
+tar_readheader_types[FTYPE_GNU_MULTI] = tar_readheader_multipart
+tar_readheader_types[FTYPE_GNU_NAMES] = tar_readheader_file
 tar_readheader_types[FTYPE_GNU_SPARSE] = tar_readheader_sparse
+tar_readheader_types[FTYPE_GNU_VOLUME] = tar_readheader_file
 tar_readheader_types[FTYPE_POSIX_GLOBAL] = tar_readheader_global
 tar_readheader_types[FTYPE_POSIX_EXT] = tar_readheader_pax
 tar_readheader_types[FTYPE_SOLARIS_EXT] = tar_readheader_pax
@@ -479,21 +521,124 @@ setmetatable(tar_readheader_types, {
   })
 
 
+local function tar_extractfile(tar, file, dest, progress, progbytes)
+  local name = file.name
+  local function output(inf, outf, size)
+    local size = file.size
+    while size > 0 do
+      local bufsize
+      if size > 10240 then
+        bufsize = 10240
+      else
+        bufsize = size
+      end
+      local buf = inf:read(bufsize)
+      if not buf then
+        return false,"premature end of file"
+      end
+      out:write(buf)
+      size = size - bufsize
+      progbytes = progbytes + bufsize
+      progress(name, progbytes)
+    end
+  end
+  local fullname = lfs.joinpath(dest, lfs.normalize(name))
+  progress(name, progbytes)
+  local t = file.type
+  if t == FTYPE_DIR then
+    return lfs.makedirs(fullname)
+  end
+  while t == FTYPE_LINK do
+    -- Does not preserve hard links.
+    local link = tar._names[file.linkname]
+    if not link then
+      t = FTYPE_SYMLINK
+    else
+      file = link
+      t = file.type
+    end
+  end
+  lfs.makedirstofile(fullname)
+  if t == FTYPE_SYMLINK then
+    return lfs.makesymlink(fullname, file.linkname)
+  elseif t == FTYPE_PIPE then
+    return lfs.makepipe(fullname)
+  elseif t == FTYPE_BDEV then
+    return lfs.makedevice(fullname, 'b', file.devmajor, file.devminor)
+  elseif t == FTYPE_CDEV then
+    return lfs.makedevice(fullname, 'c', file.devmajor, file.devminor)
+  else -- file.type == FTYPE_REG i hope
+    local out,message = iopen(fullname, "wb")
+    if not out then
+      return false, message
+    end
+    if file.sparse_struct then
+      local block = file.sparse_struct
+      out:seek("set", file.real_size-1)
+      out:write("\0")
+      tar._handle:seek("set", file.position)
+      while block do
+        out:seek("set", block.start)
+        local success,message = output(tar._handle, out, block.size)
+        if not success then
+          out:close()
+          return false,message
+        end
+        block = block.next
+      end
+    else
+      if file.size ~= 0 then
+        tar._handle:seek("set", file.position)
+        local success,message = output(tar._handle, out, file.size)
+        if not success then
+          out:close()
+          return false,message
+        end
+      end
+    end
+    out:close()
+  end
+  return true
+end
+
+local function tar_nextfile(tar, file)
+  local pos, lastfile
+  if not file then
+    file = tar._firstfile
+    pos = 0
+  else
+    pos = align(file.position + file.size)
+    lastfile = file
+    file = file.next
+  end
+  if not file then
+    tar._handle:seek("set", pos)
+    local message
+    file,message = tar_readheader(tar)
+    if message then
+      return nil,message
+    end
+    if file then
+      if lastfile then
+        lastfile.next = file
+      end
+      tar._lastfile = file
+      tar._names[file.name] = file
+    end
+  end
+  return file
+end
+
 local function tar_getfile(tar, name)
-  assert(type(name)=='string')
-  local file,message = tar._names[name]
+  assert(type(name)=='string', "invalid argument")
+  local file = tar._names[name]
   if not file and not tar._eof then
-    file = tar._lastfile
+    file = tar_nextfile(tar, tar._lastfile)
     while file do
       if file.name == name then
-        break
+        return file
       end
-      local pos = align(file.position + file.size)
-      tar._handle:seek("set", pos)
-      file,message = tar_readheader(tar)
-      if message then
-        return nil, message
-      end
+      file = tar_nextfile(tar, file)
     end
   end
   if not file then
@@ -514,8 +659,8 @@ local function tar_fileinfo(file)
     time = file.mtime,
     type = tar_type_name[file.type],
     linkname = file.linkname,
-    major = file.major,
-    minor = file.minor
+    devmajor = file.devmajor,
+    devminor = file.devminor
   }
   if file.pax then
     copy_pax(info, file.pax)
@@ -525,23 +670,44 @@ end
 
 local tar = {}
 
+local function dummy_progress() end
+
 --[[Decompress and save a file.
+    With dest, saves to the given directory using the file 
+    name from the archive, including sub-directories.
     Without dest, saves to the current directory using the
     file name from the archive, including sub-directories.
     Without name or dest, extracts all files to the current
     directory.
   ]]
-function tar:extract(name, dest)
-  if dest then
-    local t = strsub(dest, -1)
-    if t ~= '/' or t ~= path_sep then
-      dest = dest .. path_sep
-    end
-  else
-    dest = ""
-  end
+function tar:extract(name, dest, progress)
+  dest = dest or ""
+  progress = progress or dummy_progress
   if name then
+    local file,message = tar_getfile(self, name)
+    if message then
+      return false,message
+    end
+    return tar_extractfile(self, file, dest, progress, 0)
   else
+    local file,message = tar_nextfile(self)
+    if message then
+      return false,message
+    end
+    local prev = 0
+    while file do
+      local success,message = tar_extractfile(self, file, dest, progress, prev)
+      if not success then
+        return false,message
+      end
+      if file.type ~= FTYPE_DIR and file.type ~= FTYPE_GNU_DIRECTORY then
+        prev = prev + (file.real_size or file.size)
+      end
+      file,message = tar_nextfile(self, file)
+      if message then
+        return false,message
+      end
+    end
   end
   return true
 end
@@ -555,8 +721,8 @@ function tar:getinfo(name)
 end
 
 function tar:read(name, size)
-  local file, message = assert(tar_getfile(self, name))
-  if file.size == 0 then
+  local file = assert(tar_getfile(self, name), "file not found")
+  if file.size == 0 or file.type == FTYPE_DIR then
     return ""
   end
   if not size or size < file.size then
@@ -576,6 +742,19 @@ function tar:open(name)
 end
 
 function tar:names()
+  local file
+  return function(self)
+      local message
+      file,message = tar_nextfile(self, file)
+      if message then
+        error(message)
+      end
+      if not file then
+        return nil
+      end
+      return file.name
+    end, self
+  --[[
   local file = self._firstfile
   local pos = 0
   return function(self)
@@ -594,6 +773,7 @@ function tar:names()
       file = file.next
       return name
     end, self
+  ]]
 end
 
 function tar:close()
@@ -623,11 +803,12 @@ function open(file, mode)
   do
     local tn = type(file)
     assert(tn=='string' or ((
-        tn=='table' or tn=='userdata') and type(file.read)=='function'))
+        tn=='table' or tn=='userdata') and type(file.read)=='function'),
+          "invalid file handle")
     assert(type(mode)=='string')
   end
   if mode ~= "r" then
-    error("invalid mode '"..mode.."' (zip files can only be opened for reading)")
+    error("invalid mode '"..mode.."' (tar files can only be opened for reading)")
   end
   local handle, message, ownhandle
   if type(file)=='string' then
