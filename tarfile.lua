@@ -23,7 +23,8 @@
 --]==========================================================================]
 
 local assert,error = assert,error
-local type,setmetatable,tonumber = type,setmetatable,tonumber
+local type,tonumber = type,tonumber
+local setmetatable,getmetatable = setmetatable,getmetatable
 local sub,rep = string.sub,string.rep
 local find,match,gmatch = string.find,string.match,string.gmatch
 local byte,char = string.byte,string.char
@@ -86,13 +87,13 @@ local function align(n)
 end
 
 local function padstring(s, n)
-  return sub(s,1,n),rep('\0', n-#s)
+  return sub(s,1,n),rep("\0", n-#s)
 end
 
 local function unpackstring(s, i, n)
   i = i or 1
   n = n or -1
-  local pos = find(s, '\0', i, true)
+  local pos = find(s, "\0", i, true)
   if pos and pos - i < n then
     return sub(s, i, pos-1)
   end
@@ -106,7 +107,10 @@ local function unpacknumber(s, i, n)
     end
     return _s2n(n*256 + b, ...)
   end
-  if char(sub(s,i,i)) ~= 128 then
+  local b = byte(sub(s,i,i))
+  if b == 0 then
+    return nil -- empty field
+  elseif b ~= 128 then
     -- space or NULL ... make up your *** mind
     return tonumber(match(s, "^ *([0-7]+)[ %z]", i) or 0, 8)
   else
@@ -132,7 +136,7 @@ local function packnumber_gnu(n, f)
     return packnumber(n, f+1)
   end
   -- TODO: negative numbers
-  return _n2s({'\128'}, f, modf(n/256))
+  return _n2s({"\128"}, f, modf(n/256))
 end
 
 local pax_copy_fields = {
@@ -229,104 +233,238 @@ end
 local tarfile = {}
 local tarfile_sparse = {}
 
+local function tarfile_fill_block(file, size)
+  local block = assert(file._handle:read(512), "unexpected end of file")
+  file._rem = file._rem - size
+  file._bpos = size - #file._block
+  file._block = block
+  return sub(block, 1, size)
+end
+
+local function tarfile_use_block(file, size)
+  local bpos,npos = file._bpos, file._bpos + size
+  file._bpos = npos
+  file._rem = file._rem - size
+  return sub(file.block, bpos, npos-1)
+end
+
+local function tarfile_flush_block(file)
+  local block = sub(file._block, file._bpos)
+  local size = -file._bpos
+  file._rem = file._rem + file._bpos
+  file._block = ""
+  file._bpos = 0
+  return block,size
+end
+
+local function tarfile_read_buffer(file, buffer, size)
+  buffer[#buffer+1] = assert(file._handle:read(size), "unexpected end of file")
+  file._rem = file._rem - size
+end
+
 function tarfile:close()
   self._handle = nil
 end
 tarfile_sparse.close = tarfile.close
 
 function tarfile:read(size)
-  if self._rem == 0 then
+  if self._pos == self.size then
     return nil
   end
-  if size > self._rem then
-    size = self._rem
+  local opos = self._pos
+  local npos = opos + size
+  if npos > self.size then
+    npos = self.size
+    size = npos - opos
   end
-  if size <= -self._bpos then
-    local bpos,npos = self._bpos, self._bpos + size
-    self._bpos = npos
-    return sub(self._block, bpos, npos-1)
-  end
-  local buffer = {sub(self._block, self._bpos)}
-  self._rem = self._rem + self._bpos
-  size = size + self._bpos
-  self._block = ""
-  self._bpos = 0
-  while size > 10240 do
-    buffer[#buffer+1] = assert(self._handle:read(10240), "unexpected end-of-file")
-    self._rem = self._rem - 10240
-    size = size - 10240
-  end
-  while size > 512 do
-    buffer[#buffer+1] = assert(self._handle:read(512), "unexpected end-of-file")
-    self._rem = self._rem - 512
-    size = size - 512
-  end
-  self._block = assert(self._handle:read(512), "unexpected end-of-file")
-  self._rem = self._rem - size
-  self._bpos = size - #self._block
-  buffer[#buffer+1] = sub(self._block, 1, size)
-  return concat(buffer)
+  self._pos = npos
+  self._handle:seek('set', self._fpos+opos)
+  return self._handle:read(size)
 end
 
 function tarfile_sparse:read(size)
+  if self._pos == self.size then
+    return nil
+  end
+  if self._pos + size > self.size then
+    size = self.size - self._pos
+  end
+  local buffer = {}
+  while self._spos ~= 0 do
+    if self._spos > 0 then
+      if self._spos > size then
+        buffer[#buffer+1] = rep("\0", size)
+        self._spos = self._spos - size
+        self._pos = self._pos + size
+        break
+      end
+      buffer[#buffer+1] = rep("\0", self._spos)
+      size = size - self._spos
+      self._pos = self._pos + self._spos
+      self._spos = -self._sparse.size
+    else
+      local sparse = self._sparse
+      self._handle:seek('set', 
+                   self._pos - sparse.start + sparse.position + self._fpos)
+      if -self._spos > size then
+        buffer[#buffer+1] = assert(self._handle:read(size), "unexpected end of file")
+        self._spos = self._spos + size
+        self._pos = self._pos + size
+        break
+      end
+      buffer[#buffer+1] = assert(self._handle:read(-self._spos), "unexpected end of file")
+      size = size + self._spos
+      self._pos = self._pos - self._spos
+      if sparse.next then
+        sparse = sparse.next
+        self._spos = sparse.zero
+        self._sparse = sparse
+      else
+        self._spos = 0
+      end
+    end
+  end
+  return concat(buffer)
 end
 
 function tarfile:seek(whence, npos)
   npos = npos or 0
-  local pos = self.size - self._rem
-  if not whence or whence == "set" then
+  local pos = self._pos
+  if not whence or whence == 'set' then
     if npos == 0 then
       return pos
     end
-  elseif whence == "cur" then
+  elseif whence == 'cur' then
     npos = pos + npos
-  elseif whence == "end" then
+  elseif whence == 'end' then
     npos = self.size + npos
   else
     error("invalid seek")
   end
   assert(npos>=0 and npos<=self.size, "invalid seek")
-  -- Reset current position to the start of the last read block
-  pos = #self._block + self._bpos + self._rem
-  if (self.size - npos) <= pos then
+  if npos > pos then
     -- Seeking forward
-    local size = pos - (self.size - npos)
-    self._rem = pos
-    while size > 512 do
-      self._handle:read(512) -- seek may not be supported
-      self._rem = self._rem - 512
-      size = size - 512
+    self._handle:seek('set', self._fpos + self._pos)
+    local size = npos - pos
+    while size > 10240 do
+      self._handle:read(10240) -- seek may not be supported
+      size = size - 10240
     end
-    self._block = assert(self._handle:read(512), "unexpected end-of-file")
-    self._bpos = size - #self._block
-    self._rem = self._rem - size
-  else
+    self._handle:read(size)
+  elseif npos < pos then
     -- Seeking backward, file handle needs to support this
-    local pos,rem = modf(npos/512)
-    pos,rem = pos*512, rem*512
-    self._handle:seek("set", self._fpos + pos)
-    self._block = assert(self._handle:read(512), "unexpected end-of-file")
-    self._bpos = rem - #self._block
-    self._rem = self.size - npos
+    self._handle:seek('set', self._fpos + npos)
   end
+  self._pos = npos
   return npos
 end
 
 function tarfile_sparse:seek(whence, npos)
+  npos = npos or 0
+  local pos = self._pos
+  if not whence or whence == 'set' then
+    if npos == 0 then
+      return pos
+    end
+  elseif whence == 'cur' then
+    npos = pos + npos
+  elseif whence == 'end' then
+    npos = self.size + npos
+  else
+    error("invalid seek")
+  end
+  assert(npos>=0 and npos<=self.size, "invalid seek")
+  local sparse = self._sparse
+  if npos > pos then
+    -- Seeking forward
+    self._handle:seek('set', 
+                 self._pos - sparse.start + sparse.position + self._fpos)
+    local size = npos - pos
+    while size > 0 do
+      if self._spos > 0 then
+        local spos = self._spos - size
+        size = size - self._spos
+        if spos <= 0 then
+          spos = -sparse.size
+        end
+        self._spos = spos
+      else
+        local spos = self._spos + size
+        if spos < 0 then
+          while size > 10240 do
+            self._handle:read(10240) -- seek may not be supported
+            size = size - 10240
+          end
+          self._handle:read(size)
+          size = 0
+          self._spos = spos
+        else
+          local ssize = -self._spos
+          while ssize > 10240 do
+            self._handle:read(10240) -- seek may not be supported
+            ssize = ssize - 10240
+          end
+          self._handle:read(ssize)
+          size = size + self._spos
+          if sparse.next then
+            sparse = sparse.next
+            self._spos = sparse.zero
+            self._sparse = sparse
+          else
+            self._spos = 0
+            assert(size==0, "unexpected end of file")
+          end
+        end
+      end
+    end
+  elseif npos < pos then
+    -- Seeking backward, file handle needs to support this
+    while sparse.start-sparse.zero > npos do
+      sparse = assert(sparse.prev, "internal error")
+    end
+    self._sparse = sparse
+    if npos < sparse.start then
+      self._spos = sparse.start - npos
+      assert(self._spos<=sparse.zero, "internal error")
+      self._handle:seek('set', self._fpos + sparse.position)
+    else
+      local spos = sparse.size - sparse.start - npos
+      assert(spos>0, "internal error")
+      self._spos = -spos
+      self._handle:seek('set', 
+                   npos - sparse.start + sparse.position + self._fpos)
+    end
+  end
+  self._pos = npos
+  return npos
 end
 
-local tarfile_mt = { __index=tarfile, __newindex=tar_mt_newindex }
-local tarfile_sparse_mt = { __index=tarfile_sparse, __newindex=tar_mt_newindex }
+local tarfile_mt = {
+  __index=tarfile,
+  __newindex=tar_mt_newindex
+}
+local tarfile_sparse_mt = {
+  __index=tarfile_sparse,
+  __newindex=tar_mt_newindex
+}
 
 local function tarfile_open(tar, file, size, sparse)
   file._handle = tar._handle
   file._fpos = tar._handle:seek()
-  file._size = size
+--file._size = file.size
+  file._pos = 0
+--[[
   file._rem = file.size -- The number of unread bytes in the file
   file._bpos = 0 -- Negative offset from the end of the last read block
   file._block = ""
+]]
   if sparse then
     file._sparse = sparse
+    if sparse.start == 0 then
+      file._spos = -sparse.size
+    else
+      file._spos = sparse.start
+    end
     return setmetatable(file, tarfile_sparse_mt)
   end
   return setmetatable(file, tarfile_mt)
@@ -340,13 +478,18 @@ local function tar_readheader(tar, file)
   repeat
     block = tar._handle:read(512)
     if not block then
-      rawset(tar, "_eof", true)
-      return nil
+      rawset(tar, '_eof', true)
+      return nil, "read error"
     end
   until match(block, "[^%z]") -- skip NULL blocks
   local magic = sub(block, 258, 265)
-  assert(magic==POSIX_FORMAT or magic==GNU_FORMAT, "unsupported tar format")
+  if magic~=POSIX_FORMAT and magic~=GNU_FORMAT then
+    return nil, "unsupported format"
+  end
   local checksum = unpacknumber(block, 149, 8)
+  if not checksum then
+    return nil, "checksum missing"
+  end
   local sum,ssum = calculate_checksum(block)
   if checksum~=sum and checksum~=ssum then
     return nil, "checksum mismatch"
@@ -355,6 +498,9 @@ local function tar_readheader(tar, file)
   file.headersize = file.headersize + #block
   file.position = tar._handle:seek()
   file.size = unpacknumber(block, 125, 12)
+  if not file.size then
+    return nil, "malformed header"
+  end
   file.type = sub(block, 157, 157)
   if file.type == FTYPE_REG0 then
     file.type = FTYPE_REG
@@ -390,7 +536,7 @@ local function tar_readheader_file(tar, file, block)
     file.atime = unpacknumber(block, 346, 12)
     file.ctime = unpacknumber(block, 358, 12)
   end
-  if file.type == FTYPE_REG and sub(file.name, -1)=='/' then
+  if file.type == FTYPE_REG and sub(file.name, -1)=="/" then
     file.type = FTYPE_DIR
   end
   if file.pax then
@@ -413,7 +559,7 @@ end
 
 local function tar_readheader_link(tar, file, block)
   if not file.linkname then
-    file.linkname = unpacknumber(block, 158, 100)
+    file.linkname = unpackstring(block, 158, 100)
   end
   file.size = 0
   return tar_readheader_file(tar, file, block)
@@ -421,14 +567,19 @@ end
 
 local function tar_readheader_sparse(tar, file, block)
   local pos = 0
+  local next = 0
   local chunkhead = {}
   local chunk = chunkhead
   for i = 387,459,24 do
     local o,s = unpacknumber(block, i, 12), unpacknumber(block, i+12, 12)
+    if not o then
+      break
+    end
     if s ~= 0 then
-      chunk.next = { start=o, size=s, position=pos }
+      chunk.next = { start=o, size=s, zero=o-next, position=pos, prev=chunk }
       chunk = chunk.next
-      pos = pos + size
+      pos = pos + s
+      next = o + s
     end
   end
   local extended = byte(block, 483)
@@ -437,16 +588,25 @@ local function tar_readheader_sparse(tar, file, block)
     file.headersize = file.headersize + #eblock
     for i = 1,457,24 do
       local o,s = unpacknumber(eblock, i, 12), unpacknumber(eblock, i+12, 12)
+      if not o then
+        break
+      end
       if s ~= 0 then
-        chunk.next = { start=o, size=s, position=pos }
+        chunk.next = { start=o, size=s, zero=o-next, position=pos, prev=chunk }
         chunk = chunk.next
-        pos = pos + size
+        pos = pos + s
+        next = o + s
       end
     end
     extended = byte(eblock, 505)
   end
-  file.sparse_struct = chunkhead.next
   file.real_size = unpacknumber(block, 484, 12)
+  if next < file.real_size then
+    -- This creates an empty chunk for files that have trailing NULL bytes
+    chunk.next = { start=file.real_size, size=0, zero=file.real_size-next, position=pos }
+  end
+  chunkhead.next.prev = nil
+  file.sparse_struct = chunkhead.next
   file.position = tar._handle:seek()
   return tar_readheader_file(tar, file, block)
 end
@@ -534,7 +694,7 @@ local function tar_extractfile(tar, file, dest, progress, progbytes)
       end
       local buf = inf:read(bufsize)
       if not buf then
-        return false,"premature end of file"
+        return false,"unexpected end of file"
       end
       out:write(buf)
       size = size - bufsize
@@ -564,9 +724,9 @@ local function tar_extractfile(tar, file, dest, progress, progbytes)
   elseif t == FTYPE_PIPE then
     return lfs.makepipe(fullname)
   elseif t == FTYPE_BDEV then
-    return lfs.makedevice(fullname, 'b', file.devmajor, file.devminor)
+    return lfs.makedevice(fullname, "b", file.devmajor, file.devminor)
   elseif t == FTYPE_CDEV then
-    return lfs.makedevice(fullname, 'c', file.devmajor, file.devminor)
+    return lfs.makedevice(fullname, "c", file.devmajor, file.devminor)
   else -- file.type == FTYPE_REG i hope
     local out,message = iopen(fullname, "wb")
     if not out then
@@ -574,11 +734,11 @@ local function tar_extractfile(tar, file, dest, progress, progbytes)
     end
     if file.sparse_struct then
       local block = file.sparse_struct
-      out:seek("set", file.real_size-1)
+      out:seek('set', file.real_size-1)
       out:write("\0")
-      tar._handle:seek("set", file.position)
+      tar._handle:seek('set', file.position)
       while block do
-        out:seek("set", block.start)
+        out:seek('set', block.start)
         local success,message = output(tar._handle, out, block.size)
         if not success then
           out:close()
@@ -588,7 +748,7 @@ local function tar_extractfile(tar, file, dest, progress, progbytes)
       end
     else
       if file.size ~= 0 then
-        tar._handle:seek("set", file.position)
+        tar._handle:seek('set', file.position)
         local success,message = output(tar._handle, out, file.size)
         if not success then
           out:close()
@@ -605,14 +765,14 @@ local function tar_nextfile(tar, file)
   local pos, lastfile
   if not file then
     file = tar._firstfile
-    pos = 0
+    pos = tar._startpos
   else
     pos = align(file.position + file.size)
     lastfile = file
     file = file.next
   end
   if not file then
-    tar._handle:seek("set", pos)
+    tar._handle:seek('set', pos)
     local message
     file,message = tar_readheader(tar)
     if message then
@@ -728,7 +888,7 @@ function tar:read(name, size)
   if not size or size < file.size then
     size = file.size
   end
-  self._handle:seek("set", file.position)
+  self._handle:seek('set', file.position)
   return self._handle:read(size)
 end
 
@@ -737,7 +897,7 @@ function tar:open(name)
   if not file then
     return nil, message
   end
-  self._handle:seek("set", file.position)
+  self._handle:seek('set', file.position)
   return tarfile_open(self, tar_fileinfo(file), file.size, file.sparse_struct)
 end
 
@@ -759,7 +919,7 @@ function tar:names()
   local pos = 0
   return function(self)
       if not file then
-        self._handle:seek("set", pos)
+        self._handle:seek('set', pos)
         file,message = tar_readheader(self)
         if message then
           error(message)
@@ -787,13 +947,12 @@ local tar_mt = { __index=tar, __newindex=tar_mt_newindex }
 
 local function tar_open(handle, ownhandle)
   local tar = { _handle = handle, _ownhandle = ownhandle }
+  tar._startpos = handle:seek()
   tar._names = {}
-  local file, message = tar_readheader(tar)
+  local file, message = tar_nextfile(tar)
   if message then
     return nil, message
   end
-  tar._firstfile = file
-  tar._lastfile = file
   return setmetatable(tar, tar_mt)
 end
 
