@@ -1,0 +1,1 @@
+LArc is a library for reading and writing compressed files in a variety of formats.
